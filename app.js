@@ -5,68 +5,47 @@ let apps = [];     // edu_apps
 let courses = [];  // edu_courses
 
 // ===== 저장 위치 =====
-// 데이터를 읽고 쓰는 곳은 이 네 함수뿐이다.
-// 저장 위치를 바꿀 때는 이 부분만 고치면 된다.
-const KEY_APPS = 'edu_apps';
-const KEY_COURSES = 'edu_courses';
+// 데이터를 읽고 쓰는 곳은 이 네 함수뿐이다. (Supabase DB)
+// 오류가 오면 throw하고, 화면 함수가 메시지로 보여 준다.
+const db = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-function seedData() {
-  const now = Date.now();
-  const at = i => now - (10 - i) * 60000; // 신청 순서 기록용 (표시에는 안 씀)
-  courses = [
-    { course: '정보보안 기본', capacity: 5 },
-    { course: '생성형 AI 실무', capacity: 5 },
-    { course: '보고서 작성 기초', capacity: 5 },
-  ];
-  apps = [
-    { id: 1, course: '정보보안 기본', date: '2026-09-24', hours: 3, name: '김가상', team: '기획팀', status: '이수', createdAt: at(1) },
-    { id: 2, course: '정보보안 기본', date: '2026-09-24', hours: 3, name: '이가상', team: '안전팀', status: '이수', createdAt: at(2) },
-    { id: 3, course: '정보보안 기본', date: '2026-09-24', hours: 3, name: '박가상', team: '운영팀', status: '취소', createdAt: at(3) },
-    { id: 4, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '김가상', team: '기획팀', status: '신청', createdAt: at(4) },
-    { id: 5, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '최가상', team: '안전팀', status: '신청', createdAt: at(5) },
-    { id: 6, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '정가상', team: '운영팀', status: '신청', createdAt: at(6) },
-    { id: 7, course: '생성형 AI 실무', date: '2026-10-16', hours: 7, name: '한가상', team: '기획팀', status: '신청', createdAt: at(7) },
-    { id: 8, course: '보고서 작성 기초', date: '2026-11-05', hours: 4, name: '오가상', team: '운영팀', status: '신청', createdAt: at(8) },
-  ];
-  saveAll();
+// Supabase 응답의 오류를 던진다 (DB 규칙 위반 메시지가 그대로 화면에 나온다)
+function check(res) {
+  if (res.error) throw new Error(res.error.message);
+  return res.data;
 }
 
-function saveAll() {
-  localStorage.setItem(KEY_APPS, JSON.stringify(apps));
-  localStorage.setItem(KEY_COURSES, JSON.stringify(courses));
-}
-
-// 전체 불러오기
+// 전체 불러오기 (created_at → createdAt)
 async function loadData() {
-  try {
-    apps = JSON.parse(localStorage.getItem(KEY_APPS)) || [];
-    courses = JSON.parse(localStorage.getItem(KEY_COURSES)) || [];
-  } catch (e) {
-    apps = []; courses = [];
-  }
-  if (apps.length === 0) seedData();
+  if (!db) throw new Error('Supabase 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.');
+  const [a, c] = await Promise.all([
+    db.from('edu_apps').select('*').order('id'),
+    db.from('edu_courses').select('*'),
+  ]);
+  apps = check(a).map(r => ({
+    id: r.id, course: r.course, date: r.date, hours: r.hours,
+    name: r.name, team: r.team, status: r.status, createdAt: r.created_at,
+  }));
+  courses = check(c).map(r => ({ course: r.course, capacity: r.capacity }));
 }
 
-// 신청 1건 저장 (과정이 처음이면 정원 5명으로 함께 등록)
+// 신청 1건 저장 (처음 보는 과정의 등록과 정원·중복 검사는 DB가 한다)
 async function insertApp(app) {
-  const nextId = apps.reduce((m, a) => Math.max(m, a.id), 0) + 1;
-  apps.push({ ...app, id: nextId, createdAt: Date.now() });
-  if (!courses.some(c => c.course === app.course)) courses.push({ course: app.course, capacity: DEFAULT_CAPACITY });
-  saveAll();
+  const { course, date, hours, name, team } = app;
+  check(await db.from('edu_apps').insert({ course, date, hours, name, team }));
+  await loadData();
 }
 
 // 상태 변경 저장
 async function updateStatus(id, newStatus) {
-  const app = apps.find(a => a.id === id);
-  if (app) app.status = newStatus;
-  saveAll();
+  check(await db.from('edu_apps').update({ status: newStatus }).eq('id', id));
+  await loadData();
 }
 
 // 정원 변경 저장
 async function updateCapacity(course, capacity) {
-  const c = courses.find(x => x.course === course);
-  if (c) c.capacity = capacity; else courses.push({ course, capacity });
-  saveAll();
+  check(await db.from('edu_courses').update({ capacity }).eq('course', course));
+  await loadData();
 }
 // ===== 저장 위치 끝 =====
 
@@ -261,6 +240,18 @@ function renderHours() {
   }
 }
 
+// F-10 새로 불러오기 : 다른 사람이 등록한 내용을 다시 읽어 온다
+async function reloadData() {
+  try {
+    await loadData();
+  } catch (e) {
+    showMessage('데이터를 불러오지 못했습니다 : ' + e.message, 'error');
+    return;
+  }
+  renderAll();
+  showMessage('최신 목록을 불러왔습니다.', 'ok');
+}
+
 function renderAll() {
   renderSummary();
   renderList();
@@ -280,6 +271,7 @@ function fillCourseInfo() {
 document.addEventListener('DOMContentLoaded', async () => {
   $('applyForm').addEventListener('submit', e => { e.preventDefault(); addApplication(); });
   $('courseInput').addEventListener('change', fillCourseInfo);
+  $('reloadBtn').addEventListener('click', reloadData);
   try {
     await loadData();
   } catch (e) {
